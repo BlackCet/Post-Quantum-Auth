@@ -1,0 +1,17 @@
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+
+# Test data (datasets)
+/data_generation/*.csv
+/data_generation/*.json
+/data_generation/*.txt
+
+# Editor and OS files
+.vscode/
+*.swp
+*.bak
+server.py-
