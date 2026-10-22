@@ -28,9 +28,9 @@ def pharma_receiver_v2(payload, gateway_sk, hospital_pk):
         raise ValueError("V2 Signature verification failed! Metadata or payload tampered.")
 
     # 3. Native C ML-KEM Decapsulation
-    with oqs.KeyEncapsulation('ML-KEM-768') as kem:
-        kem.secret_key = gateway_sk
-        ss = kem.decap_secret(ct_kem)
+    kem = oqs.KeyEncapsulation('ML-KEM-768')
+    kem.secret_key = gateway_sk
+    ss = kem.decap_secret(ct_kem)
 
     # 4. Derive AES key and Decrypt
     hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"")

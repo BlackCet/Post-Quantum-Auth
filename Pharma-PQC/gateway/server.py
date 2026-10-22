@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from kyber_py.ml_kem import ML_KEM_768
+import ssl
 
 app = Flask(__name__)
 
@@ -27,4 +28,7 @@ def gateway_receive():
     return jsonify({"status": "forwarded", "payload_forwarded": payload})
 
 if __name__ == '__main__':
-    app.run(port=5000)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile="/mnt/d/PQA/Pharma-PQC/server_ecdsa.crt", keyfile="/mnt/d/PQA/Pharma-PQC/server_ecdsa.key")
+    context.minimum_version = ssl.TLSVersion.TLSv1_3 
+    app.run(port=5000, ssl_context=context)

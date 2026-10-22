@@ -42,9 +42,9 @@ def hospital_sender_v2(file_path, gateway_pk, hospital_sk, sequence_num=1):
     m_digest = hashlib.sha256(digest_input).digest()
     
     # 6. Native C ML-DSA Signature over the digest (NOT just the ciphertext)
-    with oqs.Signature('ML-DSA-65') as signer:
-        signer.secret_key = hospital_sk
-        sigma_improved = signer.sign(m_digest)
+    signer = oqs.Signature('ML-DSA-65')
+    signer.secret_key = hospital_sk
+    sigma_improved = signer.sign(m_digest)
     
     # 7. Assemble the final secured payload
     payload = {
