@@ -1,0 +1,6 @@
+Flask
+cryptography
+kyber-py
+dilithium-py
+liboqs-python
+requests

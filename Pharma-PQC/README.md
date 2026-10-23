@@ -31,6 +31,8 @@ Two implementations are provided:
 
 The project also contains scripts that generate synthetic files, exercise
 tampering cases, and measure cryptographic and end-to-end processing time.
+A separate `multi_server_auth.py` prototype demonstrates mutual post-quantum
+authentication between distinct peer services.
 
 ## Project layout
 
@@ -46,7 +48,9 @@ tampering cases, and measure cryptographic and end-to-end processing time.
 | `test_v2_pipeline.py` | Local v2 round trip, replay-check, and metadata-tampering demo. |
 | `test_integration.py` | Baseline HTTP integration script. |
 | `test_tls_client.py` | TLS client prototype. |
-| `requirements.txt` | Currently empty; it does not install the Python dependencies. |
+| `multi_server_auth.py` | ML-DSA-authenticated, two-way ML-KEM handshake and three-peer demo. |
+| `test_multi_server_auth.py` | Tests successful authentication, key agreement, and rejection cases. |
+| `requirements.txt` | Python dependencies for the demos. |
 
 The repository also includes a `liboqs` source/build tree one directory above
 this project. See [`liboqs` documentation](../pqc_builds/liboqs/README.md) for
@@ -69,14 +73,13 @@ cd Pharma-PQC
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install cryptography kyber-py dilithium-py Flask requests
+python -m pip install -r requirements.txt
 ```
 
-The v2 workflows require native `liboqs` and its Python bindings in addition
-to the baseline dependencies; installing the packages above alone is not
-enough. Follow the `liboqs` documentation linked above to build/install the
-native library and bindings for your platform. The checked-in
-`requirements.txt` is empty, so dependencies are currently managed manually.
+The v2 and multi-server authentication workflows require native `liboqs` as
+well as the `liboqs-python` bindings. Depending on your platform, you may need
+to build/install the native library separately; follow the `liboqs`
+documentation linked above.
 
 ## Try the local demonstrations
 
@@ -173,6 +176,46 @@ certificate is ECDSA; the TLS handshake itself is **not post-quantum**. The
 `server_pqc.crt` and `server_pqc.key` files are not loaded by the current
 server script, and their presence does not enable a post-quantum TLS handshake.
 
+### Multi-server post-quantum mutual authentication
+
+`multi_server_auth.py` is a separate server-to-server handshake prototype.
+Each peer has an ML-DSA-65 signing identity and a trust directory mapping peer
+IDs to trusted public keys. A connection runs this exchange:
+
+1. The initiator sends its identity, intended responder, a fresh nonce, and
+   an ephemeral ML-KEM-768 public key, signed with its ML-DSA key.
+2. The responder checks the initiator against its trust directory and
+   verifies the signature. It replies with its identity, a fresh nonce, its
+   own ephemeral ML-KEM key, an encapsulation to the initiator, and a
+   signature covering the hello and challenge.
+3. The initiator verifies the responder's trusted signature, decapsulates,
+   encapsulates to the responder's ephemeral key, and signs the full
+   transcript in its finish message, and proves possession of the derived
+   key with a client key-confirmation MAC.
+4. The responder verifies the signature and MAC, then decapsulates. Both
+   peers derive the same session key from the two KEM secrets and handshake
+   transcript; the responder returns its own key-confirmation MAC.
+
+Run the demo and focused tests from `Pharma-PQC/`:
+
+```sh
+python multi_server_auth.py demo
+python -m unittest -v test_multi_server_auth
+```
+
+The demo starts three separate local Flask services and makes authenticated
+connections around a hospital/gateway/pharma loop. Each service has its own
+identity and trusts the other demo identities. Credentials and the trust
+directory are generated in memory for the demo; the reusable
+`PeerAuthService`, `create_peer_app`, and `authenticate_peer` APIs can be
+configured by an application for other peer topologies.
+
+The handshake derives a session key for each peer pair, but this prototype
+does not yet expose an authenticated data-transfer endpoint that uses it.
+The demo runs over HTTP on loopback so it can be tried locally; real traffic
+must also use correctly configured HTTPS/TLS. The application-level ML-DSA
+authentication does not replace transport security.
+
 ## Payload overview
 
 The baseline sender returns JSON-compatible values containing:
@@ -198,6 +241,14 @@ shared secret and AES key are not included in the payload.
 - The v2 signature digest does not include `sequence_num` or the KEM
   encapsulation ciphertext. Do not treat those fields as authenticated by the
   sender's signature.
+- The multi-server handshake is a research prototype, not a reviewed or
+  standardized protocol. Peer keys and the trust directory are created in
+  memory in the demo; there is no persistent identity provisioning, key
+  rotation, revocation, or trust-distribution mechanism.
+- The multi-server demo authenticates peers and derives pairwise session keys,
+  but does not yet use those keys to protect application messages. It has no
+  production rate limiting, durable session storage, or denial-of-service
+  controls. Do not expose its demo HTTP services to untrusted networks.
 - Gateway scripts are prototypes and are not a ready-to-run, hardened service.
   In particular, the older gateway implementation has no configured gateway
   secret key, and the TLS client/server examples rely on local certificate
