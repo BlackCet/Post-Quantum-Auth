@@ -1,3 +1,4 @@
+import json
 import secrets
 import threading
 import unittest
@@ -9,6 +10,7 @@ from werkzeug.serving import make_server
 from multi_server_auth import (
     AuthenticationError,
     PeerAuthService,
+    _latency_summary,
     _post_json,
     _sign,
     authenticate_peer,
@@ -85,6 +87,18 @@ class MultiServerAuthenticationTests(unittest.TestCase):
             )
         self.assertEqual(error.exception.code, 401)
         error.exception.close()
+
+    def test_health_endpoint_identifies_the_peer(self):
+        url = f"{self.servers['gateway-test'][2]}/health"
+        with urllib.request.urlopen(url, timeout=5) as response:
+            health = json.loads(response.read())
+        self.assertEqual(
+            health,
+            {"status": "ok", "peer_id": "gateway-test"},
+        )
+
+    def test_latency_summary_reports_median_and_nearest_rank_p95(self):
+        self.assertEqual(_latency_summary([5.0, 1.0, 3.0, 4.0, 2.0]), (3.0, 5.0))
 
     def test_modified_hello_is_rejected(self):
         initiator = self.identities["hospital-test"]

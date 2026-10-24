@@ -1,27 +1,11 @@
 # Pharma-PQC/test_v2_pipeline.py
 
 import os
-import time
 import copy
 import oqs
 from hospital.sender_v2 import hospital_sender_v2
+from gateway.replay_guard import ReplayGuard
 from pharma.receiver_v2 import pharma_receiver_v2
-
-# Simulated Gateway Replay Cache
-seen_packets = set()
-
-def gateway_replay_check(payload):
-    packet_id = f"{payload['metadata']['source_id']}_{payload['sequence_num']}_{payload['timestamp']}"
-    
-    # Check timestamp bound (e.g., reject packets older than 5 minutes)
-    if time.time() - payload['timestamp'] > 300:
-        raise ValueError("Gateway REJECT: Packet timestamp expired!")
-        
-    if packet_id in seen_packets:
-        raise ValueError("Gateway REJECT: Duplicate sequence number detected (Replay Attack)!")
-        
-    seen_packets.add(packet_id)
-    return True
 
 def run_v2_tests():
     print("--- Setting Up V2 Keys (liboqs) ---")
@@ -39,15 +23,16 @@ def run_v2_tests():
 
     print("\n--- Generating V2 Authenticated Payload ---")
     payload_v2 = hospital_sender_v2(test_file, gateway_pk, hospital_sk, sequence_num=1)
+    replay_guard = ReplayGuard()
     
     print("\n--- Test 1: Legitimate Transmission ---")
-    gateway_replay_check(payload_v2)
+    replay_guard.accept(payload_v2, hospital_pk)
     recovered = pharma_receiver_v2(payload_v2, gateway_sk, hospital_pk)
     print(f"SUCCESS: Data decrypted cleanly -> {recovered.decode()}")
 
     print("\n--- Test 2: Replay Attack (Resending same packet) ---")
     try:
-        gateway_replay_check(payload_v2)
+        replay_guard.accept(payload_v2, hospital_pk)
         print("FAIL: Gateway allowed a replay!")
     except ValueError as e:
         print(f"SUCCESS: {e}")
@@ -60,6 +45,15 @@ def run_v2_tests():
         print("FAIL: V2 receiver accepted spoofed metadata!")
     except ValueError as e:
         print(f"SUCCESS: V2 Receiver caught metadata tampering! -> {e}")
+
+    print("\n--- Test 4: Sequence Number Tampering ---")
+    tampered_sequence_payload = copy.deepcopy(payload_v2)
+    tampered_sequence_payload["sequence_num"] += 1
+    try:
+        replay_guard.accept(tampered_sequence_payload, hospital_pk)
+        print("FAIL: Gateway accepted an altered sequence number!")
+    except ValueError as e:
+        print(f"SUCCESS: Gateway caught sequence tampering! -> {e}")
 
 if __name__ == "__main__":
     run_v2_tests()

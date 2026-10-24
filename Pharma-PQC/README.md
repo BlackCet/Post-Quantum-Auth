@@ -24,10 +24,10 @@ Two implementations are provided:
   bytes, but not the metadata.
 - **V2** (`hospital/sender_v2.py`, `pharma/receiver_v2.py`): uses the `oqs`
   Python bindings for native `liboqs` ML-KEM and ML-DSA. Its signature covers a
-  SHA-256 digest of the sorted metadata, AES-GCM nonce, timestamp, and
-  ciphertext. The payload also carries a sequence number. The replay check in
-  `test_v2_pipeline.py` is a demonstration helper, not a persistent or
-  production gateway control.
+  SHA-256 digest of canonical packet fields: metadata, timestamp, sequence
+  number, ML-KEM ciphertext, AES-GCM nonce, and encrypted payload. The
+  `gateway/replay_guard.py` helper verifies that signature before enforcing a
+  timestamp window and strictly increasing sequence numbers per source.
 
 The project also contains scripts that generate synthetic files, exercise
 tampering cases, and measure cryptographic and end-to-end processing time.
@@ -40,12 +40,14 @@ authentication between distinct peer services.
 | --- | --- |
 | `hospital/` | Baseline and v2 file encryption and signing. |
 | `pharma/` | Matching baseline and v2 signature verification and decryption. |
-| `gateway/` | Flask forwarding prototypes and a dashboard template. |
+| `gateway/` | Flask forwarding prototypes, replay guard, and dashboard template. |
+| `payload_auth.py` | Canonical v2 packet digest and ML-DSA verification. |
 | `attacker/` | Helpers for ciphertext tampering, truncation, and metadata changes. |
 | `data_generation/` | Synthetic dataset generator and sample 1 MB / 10 MB files. |
 | `benchmarking/` | Baseline, v2, and TLS benchmark scripts. |
 | `test_attacks.py` | Baseline tampering demonstrations, including unsigned metadata. |
-| `test_v2_pipeline.py` | Local v2 round trip, replay-check, and metadata-tampering demo. |
+| `test_v2_pipeline.py` | Local v2 round trip and tampering/replay demo. |
+| `test_v2_security.py` | V2 signature-binding, replay-window, and sequence tests. |
 | `test_integration.py` | Baseline HTTP integration script. |
 | `test_tls_client.py` | TLS client prototype. |
 | `multi_server_auth.py` | ML-DSA-authenticated, two-way ML-KEM handshake and three-peer demo. |
@@ -102,9 +104,13 @@ does not invalidate its signature.
 python test_v2_pipeline.py
 ```
 
-This exercises the native `oqs` implementation, a local replay-check helper,
-and metadata signature verification. The script writes its test input under
-`Pharma-PQC/data_generation/`.
+This exercises the native `oqs` implementation, the gateway replay guard,
+and metadata signature verification. It writes a synthetic test input under
+`Pharma-PQC/data_generation/`. Run the focused security tests with:
+
+```sh
+python -m unittest -v test_v2_security
+```
 
 ### Generate additional synthetic input files
 
@@ -200,6 +206,7 @@ Run the demo and focused tests from `Pharma-PQC/`:
 
 ```sh
 python multi_server_auth.py demo
+python multi_server_auth.py benchmark --runs 50
 python -m unittest -v test_multi_server_auth
 ```
 
@@ -209,6 +216,16 @@ identity and trusts the other demo identities. Credentials and the trust
 directory are generated in memory for the demo; the reusable
 `PeerAuthService`, `create_peer_app`, and `authenticate_peer` APIs can be
 configured by an application for other peer topologies.
+
+The `benchmark` command runs the same three services and reports, for each
+peer pair, the median and p95 of two measurements: a small `/health` HTTP
+round trip, and the complete mutual-authentication handshake. The HTTP
+round-trip measurement is a loopback request/response time; the handshake
+measurement also includes ML-KEM, ML-DSA, and key derivation work. Use
+`--runs` to choose the number of measured samples per pair. These results
+compare local implementation performance, not real-world network latency.
+For realistic network measurements, run peers on separate machines or use a
+network emulator and report its configured delay separately.
 
 The handshake derives a session key for each peer pair, but this prototype
 does not yet expose an authenticated data-transfer endpoint that uses it.
@@ -226,9 +243,10 @@ The baseline sender returns JSON-compatible values containing:
 - `sigma` (ML-DSA signature over `ct_aes`)
 
 The v2 sender returns `metadata`, `timestamp`, and `sequence_num`, along with
-`ct_kem`, `aes_nonce`, `ct_aes`, and `sigma`. Its signature covers a digest
-computed from the sorted metadata, nonce, timestamp, and ciphertext. The
-shared secret and AES key are not included in the payload.
+`ct_kem`, `aes_nonce`, `ct_aes`, and `sigma`. Its signature covers a digest of
+the canonical metadata, timestamp, sequence number, KEM ciphertext, AES-GCM
+nonce, and encrypted file contents. The shared secret and AES key are not
+included in the payload.
 
 ## Security and limitations
 
@@ -236,11 +254,13 @@ shared secret and AES key are not included in the payload.
   Do not use it with real patient, clinical, or otherwise sensitive data.
 - The baseline intentionally leaves metadata unsigned, as demonstrated by
   `test_attacks.py`.
-- The v2 replay check is an in-memory test helper; it does not provide durable
-  replay state, concurrency control, or a complete gateway protocol.
-- The v2 signature digest does not include `sequence_num` or the KEM
-  encapsulation ciphertext. Do not treat those fields as authenticated by the
-  sender's signature.
+- The v2 replay guard is in-memory and loses its per-source sequence state
+  when the process restarts. A deployed gateway would need durable,
+  appropriately synchronized replay state and persistent sender sequence
+  allocation.
+- The v2 replay guard is a reusable validation helper, not yet wired into a
+  production gateway forwarding endpoint. The caller must pass the public key
+  belonging to the authenticated source from a trusted key directory.
 - The multi-server handshake is a research prototype, not a reviewed or
   standardized protocol. Peer keys and the trust directory are created in
   memory in the demo; there is no persistent identity provisioning, key

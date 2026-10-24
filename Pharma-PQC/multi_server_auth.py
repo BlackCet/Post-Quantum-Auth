@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import hmac
 import json
+import math
 import secrets
+import statistics
 import threading
 import time
 import urllib.request
@@ -108,6 +110,27 @@ def _post_json(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]
     if not isinstance(parsed, dict):
         raise AuthenticationError("peer response must be a JSON object")
     return parsed
+
+
+def _http_round_trip_ms(base_url: str, timeout: float = 10) -> float:
+    started_at = time.perf_counter()
+    with urllib.request.urlopen(
+        f"{base_url.rstrip('/')}/health",
+        timeout=timeout,
+    ) as response:
+        health = json.loads(response.read())
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    if not isinstance(health, dict) or health.get("status") != "ok":
+        raise AuthenticationError("peer health check returned an invalid response")
+    return elapsed_ms
+
+
+def _latency_summary(samples: list[float]) -> tuple[float, float]:
+    if not samples:
+        raise ValueError("latency summary requires at least one sample")
+    ordered = sorted(samples)
+    p95_index = max(0, math.ceil(0.95 * len(ordered)) - 1)
+    return statistics.median(ordered), ordered[p95_index]
 
 
 def _signed_fields(message: dict[str, Any], signature_field: str = "signature") -> dict[str, Any]:
@@ -321,6 +344,10 @@ def create_peer_app(service: PeerAuthService) -> Flask:
     def handle_authentication_error(error: AuthenticationError):
         return jsonify({"error": str(error)}), 401
 
+    @app.get("/health")
+    def health():
+        return jsonify({"status": "ok", "peer_id": service.identity.peer_id})
+
     @app.post("/auth/hello")
     def auth_hello():
         body = request.get_json()
@@ -511,17 +538,112 @@ def run_demo() -> None:
             server.server_close()
 
 
+def run_benchmark(runs: int) -> None:
+    if runs < 1:
+        raise ValueError("runs must be at least 1")
+
+    identities = {
+        peer_id: create_identity(peer_id)
+        for peer_id in ("hospital-1", "gateway-1", "pharma-1")
+    }
+    trust_directory = {
+        peer_id: identity.signing_public_key
+        for peer_id, identity in identities.items()
+    }
+    services = {
+        peer_id: PeerAuthService(identity, trust_directory)
+        for peer_id, identity in identities.items()
+    }
+    servers = [
+        _start_local_server(create_peer_app(service))
+        for service in services.values()
+    ]
+    urls = dict(zip(services, (server[2] for server in servers)))
+    peer_pairs = (
+        ("hospital-1", "gateway-1"),
+        ("gateway-1", "pharma-1"),
+        ("pharma-1", "hospital-1"),
+    )
+
+    try:
+        print(f"Loopback benchmark: {runs} measured samples per peer pair")
+        print(
+            f"{'Peer pair':<32} {'HTTP RTT median/p95 (ms)':<27} "
+            f"{'Handshake median/p95 (ms)':<29}"
+        )
+        for initiator_id, responder_id in peer_pairs:
+            initiator = identities[initiator_id]
+            responder = identities[responder_id]
+            responder_url = urls[responder_id]
+
+            _http_round_trip_ms(responder_url)
+            authenticate_peer(
+                responder_url,
+                initiator,
+                responder_id,
+                responder.signing_public_key,
+            )
+
+            rtt_samples = [
+                _http_round_trip_ms(responder_url)
+                for _ in range(runs)
+            ]
+            handshake_samples = []
+            for _ in range(runs):
+                started_at = time.perf_counter()
+                authenticate_peer(
+                    responder_url,
+                    initiator,
+                    responder_id,
+                    responder.signing_public_key,
+                )
+                handshake_samples.append((time.perf_counter() - started_at) * 1000)
+
+            rtt_median, rtt_p95 = _latency_summary(rtt_samples)
+            handshake_median, handshake_p95 = _latency_summary(handshake_samples)
+            print(
+                f"{initiator_id} -> {responder_id:<20} "
+                f"{rtt_median:8.2f} / {rtt_p95:8.2f}          "
+                f"{handshake_median:8.2f} / {handshake_p95:8.2f}"
+            )
+        print(
+            "HTTP RTT is loopback request/response time; "
+            "handshake time includes crypto."
+        )
+    finally:
+        for server, thread, _ in servers:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
-        choices=("demo",),
+        choices=("demo", "benchmark"),
         nargs="?",
         default="demo",
-        help="run three mutually trusted local peer services",
+        help="run a local peer demo or benchmark",
     )
-    parser.parse_args()
-    run_demo()
+    parser.add_argument(
+        "--runs",
+        type=_positive_int,
+        default=20,
+        help="measured benchmark samples per peer pair (default: 20)",
+    )
+    args = parser.parse_args()
+    if args.command == "benchmark":
+        run_benchmark(args.runs)
+    else:
+        run_demo()
 
 
 if __name__ == "__main__":

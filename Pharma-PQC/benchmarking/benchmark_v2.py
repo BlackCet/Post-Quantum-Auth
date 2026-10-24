@@ -1,12 +1,13 @@
 import os
 import time
-import json
-import hashlib
 import oqs
 from glob import glob
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from payload_auth import packet_digest
+
 
 def run_v2_benchmarks():
     data_dir = "data_generation" 
@@ -55,20 +56,26 @@ def run_v2_benchmarks():
         # 3. Secure Digest
         timestamp = int(time.time())
         metadata = {"filename": filename, "format": "raw", "source_id": "hospital_node_alpha"}
-        metadata_bytes = json.dumps(metadata, sort_keys=True).encode()
-        digest_input = metadata_bytes + aes_nonce + str(timestamp).encode() + ct_aes
-        m_digest = hashlib.sha256(digest_input).digest()
+        packet = {
+            "metadata": metadata,
+            "timestamp": timestamp,
+            "sequence_num": 1,
+            "ct_kem": ct_kem.hex(),
+            "aes_nonce": aes_nonce.hex(),
+            "ct_aes": ct_aes.hex(),
+        }
+        m_digest = packet_digest(packet)
 
         # 4. Native C DSA Sign
         t0 = time.perf_counter()
-        signer = oqs.Signature('ML-DSA-65')
-        signer.secret_key = hospital_sk
-        sigma_improved = signer.sign(m_digest)
+        with oqs.Signature("ML-DSA-65", secret_key=hospital_sk) as signer:
+            sigma_improved = signer.sign(m_digest)
         t_sign = (time.perf_counter() - t0) * 1000
 
         # Receiver processing (Decapsulation and Verification)
-        verifier = oqs.Signature('ML-DSA-65')
-        verifier.verify(m_digest, sigma_improved, hospital_pk)
+        with oqs.Signature("ML-DSA-65") as verifier:
+            if not verifier.verify(m_digest, sigma_improved, hospital_pk):
+                raise ValueError("V2 benchmark signature verification failed")
         
         kem_rec = oqs.KeyEncapsulation('ML-KEM-768')
         kem_rec.secret_key = gateway_sk
