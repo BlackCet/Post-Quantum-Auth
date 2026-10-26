@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from gateway.dashboard_data import load_tls_benchmark_reports
 from gateway.storage import create_packet_store
 
 app = Flask(__name__, template_folder="templates")
@@ -155,16 +156,31 @@ def benchmark_pqc():
 @app.route("/dashboard")
 def dashboard():
     benchmark_results = []
-    benchmark_path = os.path.join(os.path.dirname(__file__), "..", "benchmark_results.json")
-    benchmark_path = os.path.abspath(benchmark_path)
+    benchmark_path = PROJECT_ROOT / "benchmark_results.json"
 
-    if os.path.exists(benchmark_path):
-        with open(benchmark_path) as f:
+    if benchmark_path.exists():
+        with benchmark_path.open(encoding="utf-8") as f:
             benchmark_results = json.load(f)
 
     return render_template(
         "dashboard.html",
         logs=packet_store.get_all(),
+        benchmark_results=benchmark_results,
+    )
+
+
+@app.route("/tls-dashboard")
+def tls_dashboard():
+    reports = load_tls_benchmark_reports(PROJECT_ROOT / "benchmark-output")
+    benchmark_path = PROJECT_ROOT / "benchmark_results.json"
+    benchmark_results = []
+    if benchmark_path.exists():
+        with benchmark_path.open(encoding="utf-8") as benchmark_file:
+            benchmark_results = json.load(benchmark_file)
+
+    return render_template(
+        "tls_dashboard.html",
+        reports=reports,
         benchmark_results=benchmark_results,
     )
 
@@ -197,5 +213,6 @@ if __name__ == "__main__":
     else:
         scheme = "http"
 
-    print(f"🚀 Gateway running on {scheme}://0.0.0.0:5001")
-    app.run(host="0.0.0.0", port=5001, debug=False, ssl_context=tls_context)
+    port = int(os.environ.get("PORT", "5001"))
+    print(f"🚀 Gateway running on {scheme}://0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False, ssl_context=tls_context)
