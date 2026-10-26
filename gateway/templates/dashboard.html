@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PQC Pharma Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <meta http-equiv="refresh" content="5">
+</head>
+
+<body class="bg-light">
+  <div class="container py-4">
+    <h1 class="text-center mb-4">🔐 PQC Pharmacovigilance Dashboard</h1>
+
+    <div class="row g-3 mb-4">
+      <div class="col-md-3">
+        <div class="card shadow-sm text-center p-3">
+          <h5>Secure Channel</h5>
+          <span class="badge bg-success">Established</span>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card shadow-sm text-center p-3">
+          <h5>Signature</h5>
+          <span class="badge bg-success">Verified</span>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card shadow-sm text-center p-3">
+          <h5>Decryption</h5>
+          <span class="badge bg-success">Successful</span>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card shadow-sm text-center p-3">
+          <h5>Attack Status</h5>
+          {% if logs and logs[-1].metadata.source == 'attacker' %}
+          <span class="badge bg-danger">Tampering Detected</span>
+          {% else %}
+          <span class="badge bg-secondary">No Active Attack</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-header">📦 Live Packet Logs</div>
+      <div class="card-body">
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Timestamp</th>
+              <th>Size (KB)</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for log in logs %}
+            <tr>
+              <td>{{ log.metadata.source }}</td>
+              <td>{{ log.metadata.timestamp }}</td>
+              <td>{{ log.metadata.data_size_kb }}</td>
+              <td>
+                {% if log.metadata.source == 'attacker' %}
+                <span class="badge bg-danger">Rejected</span>
+                {% else %}
+                <span class="badge bg-success">Verified</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-header">⚙️ Crypto Configuration</div>
+      <div class="card-body">
+        <ul>
+          <li>ML-KEM-768</li>
+          <li>ML-DSA-65</li>
+          <li>AES-256-GCM</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-header">📊 Benchmark Summary</div>
+      <div class="card-body">
+        {% if benchmark_results %}
+        <div class="row">
+          {% for result in benchmark_results %}
+          <div class="col-md-4 mb-3">
+            <div class="border rounded p-3 bg-white">
+              <h6>
+                {% if result.filetype %}
+                {{ result.filetype.upper() }} - {{ result.data_size_mb }} MB
+                {% else %}
+                {{ result.data_size_mb }} MB Dataset
+                {% endif %}
+              </h6>
+
+              {% if result.filename %}
+              <p class="mb-1"><strong>File:</strong> {{ result.filename }}</p>
+              {% endif %}
+
+              <p class="mb-1"><strong>Total Time:</strong> {{ result.total_time_ms }} ms</p>
+              <p class="mb-1"><strong>KEM Encaps:</strong> {{ result.kem_encaps_time_ms }} ms</p>
+              <p class="mb-1"><strong>Sign:</strong> {{ result.sign_time_ms }} ms</p>
+              <p class="mb-1"><strong>Verify:</strong> {{ result.verify_time_ms }} ms</p>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p>No benchmark results found yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-header">📈 Total Time by File Type and Data Size</div>
+      <div class="card-body">
+        <canvas id="totalTimeChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-header">📉 Cryptographic Time Breakdown</div>
+      <div class="card-body">
+        <canvas id="breakdownChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const benchmarkResults = {{ benchmark_results | tojson }};
+
+    const labels = benchmarkResults.map(r => {
+      const filetype = r.filetype ? r.filetype.toUpperCase() : "DATA";
+      return `${filetype} - ${r.data_size_mb} MB`;
+    });
+    const totalTimes = benchmarkResults.map(r => r.total_time_ms);
+
+    const kemEncaps = benchmarkResults.map(r => r.kem_encaps_time_ms);
+    const kemDecaps = benchmarkResults.map(r => r.kem_decaps_time_ms);
+    const aesEncrypt = benchmarkResults.map(r => r.aes_encrypt_time_ms);
+    const signTimes = benchmarkResults.map(r => r.sign_time_ms);
+    const verifyTimes = benchmarkResults.map(r => r.verify_time_ms);
+    const decryptTimes = benchmarkResults.map(r => r.decrypt_time_ms);
+
+    new Chart(document.getElementById('totalTimeChart'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Total Time (ms)',
+          data: totalTimes
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: true }
+        }
+      }
+    });
+
+    new Chart(document.getElementById('breakdownChart'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'KEM Encaps', data: kemEncaps },
+          { label: 'KEM Decaps', data: kemDecaps },
+          { label: 'AES Encrypt', data: aesEncrypt },
+          { label: 'ML-DSA Sign', data: signTimes },
+          { label: 'ML-DSA Verify', data: verifyTimes },
+          { label: 'AES Decrypt', data: decryptTimes }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: true }
+        }
+      }
+    });
+  </script>
+</body>
+
+</html>

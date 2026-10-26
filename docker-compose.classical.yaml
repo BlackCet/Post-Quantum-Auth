@@ -1,0 +1,77 @@
+services:
+  gateway-1:
+    environment:
+      OPENSSL_CONF: /app/docker/classical-openssl.cnf
+    volumes:
+      - ./tls-certs/classical/backend/gateway-1.crt:/tls/gateway.crt:ro
+      - ./tls-certs/classical/backend/gateway-1.key:/tls/gateway.key:ro
+      - ./tls-certs/classical/backend/ca.crt:/tls/backend-ca.crt:ro
+
+  gateway-2:
+    environment:
+      OPENSSL_CONF: /app/docker/classical-openssl.cnf
+    volumes:
+      - ./tls-certs/classical/backend/gateway-2.crt:/tls/gateway.crt:ro
+      - ./tls-certs/classical/backend/gateway-2.key:/tls/gateway.key:ro
+      - ./tls-certs/classical/backend/ca.crt:/tls/backend-ca.crt:ro
+
+  gateway-3:
+    environment:
+      OPENSSL_CONF: /app/docker/classical-openssl.cnf
+    volumes:
+      - ./tls-certs/classical/backend/gateway-3.crt:/tls/gateway.crt:ro
+      - ./tls-certs/classical/backend/gateway-3.key:/tls/gateway.key:ro
+      - ./tls-certs/classical/backend/ca.crt:/tls/backend-ca.crt:ro
+
+  tls-proxy:
+    environment:
+      OPENSSL_CONF: /app/docker/classical-openssl.cnf
+    volumes:
+      - ./docker/nginx-classical.conf:/etc/nginx/nginx.conf:ro
+      - ./tls-certs/classical/ca.crt:/tls/ca.crt:ro
+      - ./tls-certs/classical/gateway.crt:/tls/gateway.crt:ro
+      - ./tls-certs/classical/gateway.key:/tls/gateway.key:ro
+      - ./tls-certs/classical/ticket.key:/tls/ticket.key:ro
+      - ./tls-certs/classical/backend/ca.crt:/tls/backend-ca.crt:ro
+      - ./tls-certs/classical/backend/proxy.crt:/tls/proxy.crt:ro
+      - ./tls-certs/classical/backend/proxy.key:/tls/proxy.key:ro
+
+  benchmark:
+    command:
+      - python
+      - analysis/benchmark.py
+      - --network
+      - --mode
+      - classical-mtls
+      - --runs
+      - "5"
+      - --sizes
+      - "1"
+      - "10"
+    environment:
+      OPENSSL_CONF: /app/docker/classical-openssl.cnf
+      GATEWAY_CA_FILE: /tls/ca.crt
+      GATEWAY_CLIENT_CERT_FILE: /tls/hospital.crt
+      GATEWAY_CLIENT_KEY_FILE: /tls/hospital.key
+      TLS_PROFILE: classical-mtls
+      TLS_PROXY_METRICS_URL: http://tls-proxy:9100/metrics
+    volumes:
+      - ./tls-certs/classical/ca.crt:/tls/ca.crt:ro
+      - ./tls-certs/classical/hospital.crt:/tls/hospital.crt:ro
+      - ./tls-certs/classical/hospital.key:/tls/hospital.key:ro
+
+  hospital:
+    environment:
+      OPENSSL_CONF: /app/docker/classical-openssl.cnf
+    volumes:
+      - ./tls-certs/classical/ca.crt:/tls/ca.crt:ro
+      - ./tls-certs/classical/hospital.crt:/tls/hospital.crt:ro
+      - ./tls-certs/classical/hospital.key:/tls/hospital.key:ro
+
+  pharma:
+    environment:
+      OPENSSL_CONF: /app/docker/classical-openssl.cnf
+    volumes:
+      - ./tls-certs/classical/ca.crt:/tls/ca.crt:ro
+      - ./tls-certs/classical/pharma.crt:/tls/pharma.crt:ro
+      - ./tls-certs/classical/pharma.key:/tls/pharma.key:ro

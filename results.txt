@@ -1,0 +1,11 @@
+Case 1: 1mb data
+Analysis:
+=== PQC Pharmacovigilance Performance (10-run average) ===
+kem_time_ms: 3.49 ms
+aes_time_ms: 9.69 ms
+sign_time_ms: 58.34 ms
+verify_time_ms: 9.93 ms
+decrypt_time_ms: 9.5 ms
+total_time_ms: 91.12 ms
+data_size_kb: 1024.0 ms
+✅ 1 MB adverse-event dataset processed securely in 91.12 ms

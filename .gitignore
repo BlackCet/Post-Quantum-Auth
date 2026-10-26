@@ -1,0 +1,15 @@
+tls-certs/
+benchmark-output/
+.venv/
+__pycache__/
+*.py[cod]
+keys.json
+tls-certs/
+received_files/
+benchmark-output/
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx

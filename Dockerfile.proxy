@@ -1,0 +1,17 @@
+FROM python:3.12-slim-trixie
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nginx \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir psutil
+
+COPY docker ./docker
+COPY docker/nginx-pq.conf /etc/nginx/nginx.conf
+COPY docker/proxy_metrics.py /app/proxy_metrics.py
+
+ENV OPENSSL_CONF=/app/docker/pq-openssl.cnf
+
+CMD ["python", "/app/proxy_metrics.py"]

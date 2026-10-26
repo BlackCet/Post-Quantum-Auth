@@ -1,0 +1,14 @@
+.git
+.venv
+**/__pycache__
+*.py[cod]
+keys.json
+tls-certs
+benchmark_results.json
+benchmark-output
+fake_data.txt
+fake_data_*.csv
+fake_data_*.json
+fake_data_*.txt
+fake_report_*.pdf
+received_files

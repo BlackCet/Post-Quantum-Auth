@@ -1,0 +1,9 @@
+flask
+requests
+kyber-py
+dilithium-py
+pycryptodome
+cryptography 
+reportlab
+redis
+psutil

@@ -1,0 +1,173 @@
+services:
+  tls-certgen:
+    build: .
+    profiles: ["tools"]
+    command: ["sh", "/app/scripts/generate_tls_certs.sh"]
+    volumes:
+      - ./tls-certs:/tls-certs
+
+  redis:
+    build:
+      context: .
+      dockerfile: Dockerfile.redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  gateway-1:
+    build: .
+    command: ["python", "gateway/server.py"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      GATEWAY_TLS_CERT_FILE: /tls/gateway.crt
+      GATEWAY_TLS_KEY_FILE: /tls/gateway.key
+      GATEWAY_TLS_CA_FILE: /tls/backend-ca.crt
+    volumes:
+      - ./keys.json:/app/keys.json:ro
+      - ./tls-certs/pq/backend/gateway-1.crt:/tls/gateway.crt:ro
+      - ./tls-certs/pq/backend/gateway-1.key:/tls/gateway.key:ro
+      - ./tls-certs/pq/backend/ca.crt:/tls/backend-ca.crt:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',5001),timeout=2).close()"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  gateway-2:
+    build: .
+    command: ["python", "gateway/server.py"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      GATEWAY_TLS_CERT_FILE: /tls/gateway.crt
+      GATEWAY_TLS_KEY_FILE: /tls/gateway.key
+      GATEWAY_TLS_CA_FILE: /tls/backend-ca.crt
+    volumes:
+      - ./keys.json:/app/keys.json:ro
+      - ./tls-certs/pq/backend/gateway-2.crt:/tls/gateway.crt:ro
+      - ./tls-certs/pq/backend/gateway-2.key:/tls/gateway.key:ro
+      - ./tls-certs/pq/backend/ca.crt:/tls/backend-ca.crt:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',5001),timeout=2).close()"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  gateway-3:
+    build: .
+    command: ["python", "gateway/server.py"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      GATEWAY_TLS_CERT_FILE: /tls/gateway.crt
+      GATEWAY_TLS_KEY_FILE: /tls/gateway.key
+      GATEWAY_TLS_CA_FILE: /tls/backend-ca.crt
+    volumes:
+      - ./keys.json:/app/keys.json:ro
+      - ./tls-certs/pq/backend/gateway-3.crt:/tls/gateway.crt:ro
+      - ./tls-certs/pq/backend/gateway-3.key:/tls/gateway.key:ro
+      - ./tls-certs/pq/backend/ca.crt:/tls/backend-ca.crt:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',5001),timeout=2).close()"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  tls-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    ports:
+      - "5001:5001"
+    depends_on:
+      gateway-1:
+        condition: service_healthy
+      gateway-2:
+        condition: service_healthy
+      gateway-3:
+        condition: service_healthy
+    volumes:
+      - ./tls-certs/pq/ca.crt:/tls/ca.crt:ro
+      - ./tls-certs/pq/gateway.crt:/tls/gateway.crt:ro
+      - ./tls-certs/pq/gateway.key:/tls/gateway.key:ro
+      - ./tls-certs/pq/ticket.key:/tls/ticket.key:ro
+      - ./tls-certs/pq/backend/ca.crt:/tls/backend-ca.crt:ro
+      - ./tls-certs/pq/backend/proxy.crt:/tls/proxy.crt:ro
+      - ./tls-certs/pq/backend/proxy.key:/tls/proxy.key:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 5001), timeout=2).close()"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  benchmark:
+    build: .
+    profiles: ["tools"]
+    command:
+      - python
+      - analysis/benchmark.py
+      - --network
+      - --mode
+      - pq-hybrid-tls
+      - --runs
+      - "5"
+      - --sizes
+      - "1"
+      - "10"
+    depends_on:
+      tls-proxy:
+        condition: service_healthy
+    environment:
+      GATEWAY_HOST: tls-proxy
+      GATEWAY_PORT: "5001"
+      GATEWAY_TLS_SERVER_NAME: gateway
+      GATEWAY_CA_FILE: /tls/ca.crt
+      GATEWAY_CLIENT_CERT_FILE: /tls/hospital.crt
+      GATEWAY_CLIENT_KEY_FILE: /tls/hospital.key
+      TLS_PROFILE: pq-hybrid-tls
+      TLS_PROXY_METRICS_URL: http://tls-proxy:9100/metrics
+    volumes:
+      - ./keys.json:/app/keys.json:ro
+      - ./tls-certs/pq/ca.crt:/tls/ca.crt:ro
+      - ./tls-certs/pq/hospital.crt:/tls/hospital.crt:ro
+      - ./tls-certs/pq/hospital.key:/tls/hospital.key:ro
+      - ./benchmark-output:/app/benchmark-output
+
+  hospital:
+    build: .
+    command: ["python", "-m", "hospital.hospital", "/app/fake_data.txt"]
+    environment:
+      GATEWAY_URL: https://tls-proxy:5001
+      GATEWAY_CA_FILE: /tls/ca.crt
+      GATEWAY_CLIENT_CERT_FILE: /tls/hospital.crt
+      GATEWAY_CLIENT_KEY_FILE: /tls/hospital.key
+    volumes:
+      - ./keys.json:/app/keys.json:ro
+      - ./tls-certs/pq/ca.crt:/tls/ca.crt:ro
+      - ./tls-certs/pq/hospital.crt:/tls/hospital.crt:ro
+      - ./tls-certs/pq/hospital.key:/tls/hospital.key:ro
+      - ./fake_data.txt:/app/fake_data.txt:ro
+
+  pharma:
+    build: .
+    command: ["python", "-m", "pharma.pharma"]
+    environment:
+      GATEWAY_URL: https://tls-proxy:5001
+      GATEWAY_CA_FILE: /tls/ca.crt
+      GATEWAY_CLIENT_CERT_FILE: /tls/pharma.crt
+      GATEWAY_CLIENT_KEY_FILE: /tls/pharma.key
+    volumes:
+      - ./keys.json:/app/keys.json:ro
+      - ./tls-certs/pq/ca.crt:/tls/ca.crt:ro
+      - ./tls-certs/pq/pharma.crt:/tls/pharma.crt:ro
+      - ./tls-certs/pq/pharma.key:/tls/pharma.key:ro
+      - ./received_files:/app/received_files
