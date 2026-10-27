@@ -7,3 +7,4 @@ cryptography
 reportlab
 redis
 psutil
+liboqs-python==0.16.0.1

@@ -8,6 +8,7 @@ import statistics
 import threading
 import urllib.request
 import hashlib
+import uuid
 from pathlib import Path
 from collections import Counter
 
@@ -17,21 +18,26 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from kyber_py.ml_kem import ML_KEM_768
-from dilithium_py.ml_dsa import ML_DSA_65
 from Crypto.Cipher import AES
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from hospital.fakedatagenerator import generate_pharma_data
 from analysis.tls_network_benchmark import create_client_context, perform_tls_post
+from crypto_backend import (
+    BASELINE,
+    IMPROVED,
+    decapsulate,
+    encapsulate,
+    key_fields,
+    kem_keygen,
+    signature_keygen,
+    sign,
+    verify,
+)
+from packet_auth import packet_auth_fields, signature_digest
 
 with open(PROJECT_ROOT / "keys.json") as f:
     keys = json.load(f)
-
-SERVER_EK = bytes.fromhex(keys["server_ek"])
-SERVER_DK = bytes.fromhex(keys["server_dk"])
-HOSPITAL_SK = bytes.fromhex(keys["hospital_sk"])
-PHARMA_PK = bytes.fromhex(keys["pharma_pk"])
 
 
 def derive_aes(shared_secret: bytes) -> bytes:
@@ -45,31 +51,46 @@ def derive_aes(shared_secret: bytes) -> bytes:
 
 
 def load_data(size_mb: int, filename: str = "fake_data.txt") -> bytes:
-    data_path = PROJECT_ROOT / filename
-    generate_pharma_data(filename=str(data_path), target_size_mb=size_mb)
+    data_path = PROJECT_ROOT / "benchmark-output" / "datasets" / filename
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    if not data_path.exists():
+        generate_pharma_data(filename=str(data_path), target_size_mb=size_mb)
     with open(data_path, "rb") as f:
         return f.read()
 
 
-def run_full_cycle(data: bytes, include_network_payload: bool = False):
+def run_full_cycle(
+    data: bytes,
+    include_network_payload: bool = False,
+    implementation: str = BASELINE,
+    *,
+    filetype: str = "data",
+    filename: str = "dataset",
+    source: str = "local-benchmark",
+):
+    server_ek, server_dk, hospital_sk, pharma_pk = key_fields(
+        keys,
+        implementation,
+    )
+
     t0 = time.perf_counter()
-    ML_KEM_768.keygen()
+    kem_keygen(implementation)
     kem_keygen_time = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    ML_DSA_65.keygen()
+    signature_keygen(implementation)
     signature_keygen_time = time.perf_counter() - t0
 
     start_total = time.perf_counter()
 
     # ML-KEM encaps
     t0 = time.perf_counter()
-    shared_secret_sender, kem_ct = ML_KEM_768.encaps(SERVER_EK)
+    shared_secret_sender, kem_ct = encapsulate(implementation, server_ek)
     kem_encaps_time = time.perf_counter() - t0
 
     # ML-KEM decaps
     t0 = time.perf_counter()
-    shared_secret_gateway = ML_KEM_768.decaps(SERVER_DK, kem_ct)
+    shared_secret_gateway = decapsulate(implementation, server_dk, kem_ct)
     kem_decaps_time = time.perf_counter() - t0
 
     if shared_secret_sender != shared_secret_gateway:
@@ -85,13 +106,32 @@ def run_full_cycle(data: bytes, include_network_payload: bool = False):
     aes_encrypt_time = time.perf_counter() - t0
 
     # ML-DSA sign
+    metadata = {
+        "source": source,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "filename": filename,
+        "filetype": filetype,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "original_payload_bytes": len(data),
+    }
+    authenticated_fields = {}
+    if implementation == IMPROVED:
+        authenticated_fields = packet_auth_fields()
+        signed_packet = {
+            "ciphertext": aes_ct.hex(),
+            "metadata": metadata,
+            **authenticated_fields,
+        }
+        signed_message = signature_digest(signed_packet)
+    else:
+        signed_message = aes_ct
     t0 = time.perf_counter()
-    sig = ML_DSA_65.sign(HOSPITAL_SK, aes_ct)
+    sig = sign(implementation, hospital_sk, signed_message)
     sign_time = time.perf_counter() - t0
 
     # ML-DSA verify
     t0 = time.perf_counter()
-    verified = ML_DSA_65.verify(PHARMA_PK, aes_ct, sig)
+    verified = verify(implementation, pharma_pk, signed_message, sig)
     verify_time = time.perf_counter() - t0
 
     if not verified:
@@ -125,24 +165,30 @@ def run_full_cycle(data: bytes, include_network_payload: bool = False):
         "aes_ciphertext_bytes": len(aes_ct),
         "signature_bytes": len(sig),
         "verified": verified,
-        "plaintext_match": plaintext == data
+        "plaintext_match": plaintext == data,
+        "implementation": implementation,
     }
     if include_network_payload:
-        import hashlib
-
-        result["_network_payload"] = json.dumps({
+        network_packet = {
             "kem_ct": kem_ct.hex(),
             "ciphertext": aes_ct.hex(),
             "signature": sig.hex(),
-            "metadata": {
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "original_payload_bytes": len(data),
-            },
-        }, separators=(",", ":")).encode("utf-8")
+            "metadata": metadata,
+            **authenticated_fields,
+        }
+        result["_network_payload"] = json.dumps(
+            network_packet,
+            separators=(",", ":"),
+        ).encode("utf-8")
     return result
 
 
-def benchmark_sizes(filetypes=("txt", "csv", "json", "pdf"), sizes=(1, 10, 50), runs=5):
+def benchmark_sizes(
+    filetypes=("txt", "csv", "json", "pdf"),
+    sizes=(1, 10, 50),
+    runs=5,
+    implementation=BASELINE,
+):
     all_results = []
 
     for filetype in filetypes:
@@ -158,7 +204,12 @@ def benchmark_sizes(filetypes=("txt", "csv", "json", "pdf"), sizes=(1, 10, 50), 
 
             for i in range(runs):
                 print(f"  ▶ Run {i+1}/{runs}")
-                result = run_full_cycle(data)
+                result = run_full_cycle(
+                    data,
+                    implementation=implementation,
+                    filetype=filetype,
+                    filename=filename,
+                )
                 if result is not None:
                     result["filetype"] = filetype
                     result["filename"] = filename
@@ -293,6 +344,7 @@ def benchmark_network_dataset(
     filetype,
     filename,
     mode,
+    implementation,
     runs,
     host,
     port,
@@ -308,8 +360,15 @@ def benchmark_network_dataset(
             f"Mode {mode!r} requires TLS_PROFILE={required_profile!r}; "
             f"the container has {configured_profile!r}."
         )
+    if mode == "application-pqc":
+        configured_implementation = os.environ.get("PQC_IMPLEMENTATION", BASELINE)
+        if configured_implementation != implementation:
+            raise RuntimeError(
+                f"Application-PQC benchmark with implementation={implementation!r} "
+                f"requires PQC_IMPLEMENTATION={implementation!r}; "
+                f"the container has {configured_implementation!r}."
+            )
 
-    keygen_fields = []
     crypto_runs = []
     fresh_runs = []
     resumed_runs = []
@@ -372,6 +431,10 @@ def benchmark_network_dataset(
             receiver_decrypt_times.append(result["receiver_decrypt_time_ms"])
             receiver_verify_times.append(result["receiver_verify_time_ms"])
 
+    def record_crypto_run(result):
+        crypto_runs.append(result)
+
+    benchmark_source = f"benchmark-{uuid.uuid4().hex}"
     with ResourceMonitor() as resource_monitor:
         resume_context = create_client_context(ca_file, cert_file, key_file)
         resume_seed = None
@@ -379,16 +442,16 @@ def benchmark_network_dataset(
             app_cycle = run_full_cycle(
                 data,
                 include_network_payload=(mode == "application-pqc"),
+                implementation=implementation,
+                filetype=filetype,
+                filename=filename,
+                source=benchmark_source,
             )
             if app_cycle is None:
                 errors["application_crypto_failure"] += 1
                 failed_requests += 2
                 continue
-            crypto_runs.append(app_cycle)
-            keygen_fields.append({
-                "kem_keygen_time_ms": app_cycle["kem_keygen_time_ms"],
-                "signature_keygen_time_ms": app_cycle["signature_keygen_time_ms"],
-            })
+            record_crypto_run(app_cycle)
 
             fresh_context = (
                 resume_context
@@ -441,12 +504,28 @@ def benchmark_network_dataset(
                 errors["resumption_session_unavailable"] += 1
                 continue
 
+            resumed_cycle = app_cycle
+            if mode == "application-pqc" and implementation == IMPROVED:
+                resumed_cycle = run_full_cycle(
+                    data,
+                    include_network_payload=True,
+                    implementation=implementation,
+                    filetype=filetype,
+                    filename=filename,
+                    source=benchmark_source,
+                )
+                if resumed_cycle is None:
+                    errors["resumed_application_crypto_failure"] += 1
+                    failed_requests += 1
+                    continue
+                record_crypto_run(resumed_cycle)
+
             resumption_attempts += 1
             try:
                 resumed = _network_request(
                     mode=mode,
                     data=data,
-                    app_cycle=app_cycle,
+                    app_cycle=resumed_cycle,
                     host=host,
                     port=port,
                     server_name=server_name,
@@ -506,6 +585,7 @@ def benchmark_network_dataset(
     result = {
         "schema_version": 2,
         "mode": mode,
+        "pqc_implementation": implementation,
         "tls_profile": configured_profile,
         "filetype": filetype,
         "filename": filename,
@@ -655,6 +735,7 @@ def _resource_delta(before, after):
 def benchmark_network(
     *,
     mode,
+    implementation,
     filetypes,
     sizes,
     runs,
@@ -689,6 +770,7 @@ def benchmark_network(
                 filetype=filetype,
                 filename=filename,
                 mode=mode,
+                implementation=implementation,
                 runs=runs,
                 host=host,
                 port=port,
@@ -713,6 +795,12 @@ if __name__ == "__main__":
         "--mode",
         choices=("classical-mtls", "pq-hybrid-tls", "application-pqc"),
         default="pq-hybrid-tls",
+    )
+    parser.add_argument(
+        "--implementation",
+        choices=(BASELINE, IMPROVED),
+        default=BASELINE,
+        help="Application-layer PQC backend to measure.",
     )
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--sizes", type=int, nargs="+", default=(1, 10))
@@ -742,10 +830,13 @@ if __name__ == "__main__":
         if missing:
             parser.error("TLS network mode requires " + ", ".join(missing))
         output = args.output or (
-            PROJECT_ROOT / "benchmark-output" / f"tls-{args.mode}.json"
+            PROJECT_ROOT
+            / "benchmark-output"
+            / f"tls-{args.mode}-{args.implementation}.json"
         )
         benchmark_network(
             mode=args.mode,
+            implementation=args.implementation,
             filetypes=args.filetypes,
             sizes=args.sizes,
             runs=args.runs,
@@ -762,11 +853,19 @@ if __name__ == "__main__":
             filetypes=tuple(args.filetypes),
             sizes=tuple(args.sizes),
             runs=args.runs,
+            implementation=args.implementation,
         )
         print("=== PQC Pharmacovigilance Benchmark Results ===")
         for result in results:
             print(json.dumps(result, indent=2))
-        output = args.output or (PROJECT_ROOT / "benchmark_results.json")
+        output = args.output or (
+            PROJECT_ROOT
+            / (
+                "benchmark_results.json"
+                if args.implementation == BASELINE
+                else "benchmark_results_improved.json"
+            )
+        )
         with open(output, "w", encoding="utf-8") as result_file:
             json.dump(results, result_file, indent=2)
         print(f"\nSaved results to {output}")

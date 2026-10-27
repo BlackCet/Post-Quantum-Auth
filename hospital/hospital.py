@@ -5,8 +5,6 @@ import sys
 import mimetypes
 from pathlib import Path
 from datetime import datetime, timezone
-from kyber_py.ml_kem import ML_KEM_768
-from dilithium_py.ml_dsa import ML_DSA_65
 from Crypto.Cipher import AES
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
@@ -16,17 +14,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from tls_client import configure_gateway_session
+from crypto_backend import BASELINE, encapsulate, key_fields, sign
+from packet_auth import packet_auth_fields, signature_digest
 
 # ================== CONFIG ==================
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://127.0.0.1:5001")
+PQC_IMPLEMENTATION = os.environ.get("PQC_IMPLEMENTATION", BASELINE)
 KEYS_FILE = "keys.json"
 # ============================================
 
 with open(KEYS_FILE) as f:
     keys = json.load(f)
 
-SERVER_EK = bytes.fromhex(keys["server_ek"])
-HOSPITAL_SK = bytes.fromhex(keys["hospital_sk"])
+SERVER_EK, SERVER_DK, HOSPITAL_SK, PHARMA_PK = key_fields(keys, PQC_IMPLEMENTATION)
 
 
 def derive_aes(shared_secret: bytes) -> bytes:
@@ -76,7 +76,7 @@ def main():
     print(f"   Size: {file_meta['data_size_kb']} KB")
 
     # === Step 2: ML-KEM handshake with Gateway ===
-    shared_secret, kem_ct = ML_KEM_768.encaps(SERVER_EK)
+    shared_secret, kem_ct = encapsulate(PQC_IMPLEMENTATION, SERVER_EK)
     print("✅ ML-KEM-768 handshake completed")
 
     # === Step 3: Derive AES-256 key using HKDF ===
@@ -90,21 +90,31 @@ def main():
     print("🔐 AES-256-GCM encryption complete")
 
     # === Step 5: ML-DSA sign encrypted payload ===
-    signature = ML_DSA_65.sign(HOSPITAL_SK, aes_ct)
-    print("✍️ ML-DSA-65 signature generated")
-
-    # === Step 6: Send to Gateway ===
     payload = {
         "kem_ct": kem_ct.hex(),
         "ciphertext": aes_ct.hex(),
-        "signature": signature.hex(),
         "metadata": {
             "source": "hospital_A",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             **file_meta
         }
     }
+    if PQC_IMPLEMENTATION == BASELINE:
+        payload["signature"] = sign(
+            PQC_IMPLEMENTATION,
+            HOSPITAL_SK,
+            aes_ct,
+        ).hex()
+    else:
+        payload.update(packet_auth_fields())
+        payload["signature"] = sign(
+            PQC_IMPLEMENTATION,
+            HOSPITAL_SK,
+            signature_digest(payload),
+        ).hex()
+    print("✍️ ML-DSA-65 signature generated")
 
+    # === Step 6: Send to Gateway ===
     session = requests.Session()
     configure_gateway_session(session, GATEWAY_URL)
     response = session.post(f"{GATEWAY_URL}/send", json=payload, timeout=30)

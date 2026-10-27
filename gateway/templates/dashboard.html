@@ -92,7 +92,7 @@
     </div>
 
     <div class="card shadow-sm mb-4">
-      <div class="card-header">📊 Benchmark Summary</div>
+      <div class="card-header">📊 Baseline Benchmark Summary</div>
       <div class="card-body">
         {% if benchmark_results %}
         <div class="row">
@@ -125,6 +125,37 @@
       </div>
     </div>
 
+    {% if improved_benchmark_results %}
+    <div class="card shadow-sm mb-4">
+      <div class="card-header">⚡ Improved Benchmark Summary · Authenticated Metadata + Replay Protection + liboqs</div>
+      <div class="card-body">
+        <div class="row">
+          {% for result in improved_benchmark_results %}
+          <div class="col-md-4 mb-3">
+            <div class="border rounded p-3 bg-white">
+              <h6>{{ result.filetype.upper() }} - {{ result.data_size_mb }} MB</h6>
+              {% if result.filename %}
+              <p class="mb-1"><strong>File:</strong> {{ result.filename }}</p>
+              {% endif %}
+              <p class="mb-1"><strong>Total Time:</strong> {{ result.total_time_ms }} ms</p>
+              <p class="mb-1"><strong>KEM Encaps:</strong> {{ result.kem_encaps_time_ms }} ms</p>
+              <p class="mb-1"><strong>Sign:</strong> {{ result.sign_time_ms }} ms</p>
+              <p class="mb-1"><strong>Verify:</strong> {{ result.verify_time_ms }} ms</p>
+              <p class="mb-0"><strong>Correctness:</strong>
+                {% if result.verified and result.plaintext_match %}
+                <span class="badge text-bg-success">Passed</span>
+                {% else %}
+                <span class="badge text-bg-warning">Check result</span>
+                {% endif %}
+              </p>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <div class="card shadow-sm mb-4">
       <div class="card-header">📈 Total Time by File Type and Data Size</div>
       <div class="card-body">
@@ -143,27 +174,25 @@
   <script>
     const benchmarkResults = {{ benchmark_results | tojson }};
 
-    const labels = benchmarkResults.map(r => {
-      const filetype = r.filetype ? r.filetype.toUpperCase() : "DATA";
-      return `${filetype} - ${r.data_size_mb} MB`;
-    });
-    const totalTimes = benchmarkResults.map(r => r.total_time_ms);
+    const improvedBenchmarkResults = {{ improved_benchmark_results | tojson }};
+    const resultLabel = r => `${r.filetype ? r.filetype.toUpperCase() : "DATA"} - ${r.data_size_mb} MB`;
+    const labels = Array.from(new Set([
+      ...benchmarkResults.map(resultLabel),
+      ...improvedBenchmarkResults.map(resultLabel)
+    ]));
+    const findResult = (results, label) => results.find(r => resultLabel(r) === label);
 
-    const kemEncaps = benchmarkResults.map(r => r.kem_encaps_time_ms);
-    const kemDecaps = benchmarkResults.map(r => r.kem_decaps_time_ms);
-    const aesEncrypt = benchmarkResults.map(r => r.aes_encrypt_time_ms);
-    const signTimes = benchmarkResults.map(r => r.sign_time_ms);
-    const verifyTimes = benchmarkResults.map(r => r.verify_time_ms);
-    const decryptTimes = benchmarkResults.map(r => r.decrypt_time_ms);
+    const metricData = (results, field) =>
+      labels.map(key => findResult(results, key)?.[field] ?? null);
 
     new Chart(document.getElementById('totalTimeChart'), {
       type: 'bar',
       data: {
         labels: labels,
-        datasets: [{
-          label: 'Total Time (ms)',
-          data: totalTimes
-        }]
+        datasets: [
+          { label: 'Baseline total time (ms)', data: metricData(benchmarkResults, 'total_time_ms') },
+          { label: 'Improved total time (ms)', data: metricData(improvedBenchmarkResults, 'total_time_ms') }
+        ]
       },
       options: {
         responsive: true,
@@ -178,12 +207,18 @@
       data: {
         labels: labels,
         datasets: [
-          { label: 'KEM Encaps', data: kemEncaps },
-          { label: 'KEM Decaps', data: kemDecaps },
-          { label: 'AES Encrypt', data: aesEncrypt },
-          { label: 'ML-DSA Sign', data: signTimes },
-          { label: 'ML-DSA Verify', data: verifyTimes },
-          { label: 'AES Decrypt', data: decryptTimes }
+          { label: 'Baseline KEM Encaps', data: metricData(benchmarkResults, 'kem_encaps_time_ms') },
+          { label: 'Improved KEM Encaps', data: metricData(improvedBenchmarkResults, 'kem_encaps_time_ms') },
+          { label: 'Baseline KEM Decaps', data: metricData(benchmarkResults, 'kem_decaps_time_ms') },
+          { label: 'Improved KEM Decaps', data: metricData(improvedBenchmarkResults, 'kem_decaps_time_ms') },
+          { label: 'Baseline AES Encrypt', data: metricData(benchmarkResults, 'aes_encrypt_time_ms') },
+          { label: 'Improved AES Encrypt', data: metricData(improvedBenchmarkResults, 'aes_encrypt_time_ms') },
+          { label: 'Baseline ML-DSA Sign', data: metricData(benchmarkResults, 'sign_time_ms') },
+          { label: 'Improved ML-DSA Sign', data: metricData(improvedBenchmarkResults, 'sign_time_ms') },
+          { label: 'Baseline ML-DSA Verify', data: metricData(benchmarkResults, 'verify_time_ms') },
+          { label: 'Improved ML-DSA Verify', data: metricData(improvedBenchmarkResults, 'verify_time_ms') },
+          { label: 'Baseline AES Decrypt', data: metricData(benchmarkResults, 'decrypt_time_ms') },
+          { label: 'Improved AES Decrypt', data: metricData(improvedBenchmarkResults, 'decrypt_time_ms') }
         ]
       },
       options: {

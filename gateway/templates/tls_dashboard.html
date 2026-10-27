@@ -130,6 +130,7 @@
             <tr>
               <td>
                 <strong>{{ result.tls_profile or result.mode or "TLS" }}</strong><br>
+                <small>Application PQC: {{ result.pqc_implementation or "baseline" }}</small><br>
                 <small>{{ result.filetype|upper }} · {{ result.data_size_mb }} MB</small>
               </td>
               <td>{{ result.successful_requests or 0 }} / {{ (result.successful_requests or 0) + (result.failed_requests or 0) }}</td>
@@ -238,7 +239,7 @@
   <script>
     const tlsResults = {{ reports | map(attribute="results") | sum(start=[]) | tojson }};
     const labels = tlsResults.map(result =>
-      `${(result.tls_profile || result.mode || "TLS")} · ${(result.filetype || "data").toUpperCase()} · ${result.data_size_mb} MB`
+      `${(result.tls_profile || result.mode || "TLS")} · ${(result.pqc_implementation || "baseline")} · ${(result.filetype || "data").toUpperCase()} · ${result.data_size_mb} MB`
     );
     const median = (result, key) => result[key] ? result[key].median : null;
     new Chart(document.getElementById("tlsMetricsChart"), {

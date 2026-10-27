@@ -30,6 +30,27 @@ class PacketStoreTests(unittest.TestCase):
         self.assertEqual(store.get_all(), [first, second])
         self.assertTrue(store.ping())
 
+    def test_memory_store_rejects_replayed_and_out_of_order_packets(self):
+        store = InMemoryPacketStore()
+        expires_at = 2_000_000_000
+
+        self.assertEqual(
+            store.accept_packet("hospital_A", 10, "nonce-a", expires_at),
+            "accepted",
+        )
+        self.assertEqual(
+            store.accept_packet("hospital_A", 10, "nonce-b", expires_at),
+            "out_of_order",
+        )
+        self.assertEqual(
+            store.accept_packet("hospital_A", 11, "nonce-a", expires_at),
+            "replay",
+        )
+        self.assertEqual(
+            store.accept_packet("hospital_A", 11, "nonce-b", expires_at),
+            "accepted",
+        )
+
     def test_redis_stores_are_shared_between_gateway_instances(self):
         client = FakeRedis()
         with patch("gateway.storage.redis.Redis.from_url", return_value=client):

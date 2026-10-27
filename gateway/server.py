@@ -2,8 +2,6 @@ from flask import Flask, request, jsonify, render_template, redirect
 from Crypto.Cipher import AES
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from kyber_py.ml_kem import ML_KEM_768
-from dilithium_py.ml_dsa import ML_DSA_65
 import json
 import os
 import ssl
@@ -19,14 +17,23 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from gateway.dashboard_data import load_tls_benchmark_reports
 from gateway.storage import create_packet_store
+from crypto_backend import IMPROVED, decapsulate, key_fields, verify
+from packet_auth import (
+    MAX_CLOCK_SKEW_SECONDS,
+    signature_digest,
+    timestamp_is_fresh,
+)
 
 app = Flask(__name__, template_folder="templates")
 packet_store = create_packet_store()
 
 with open("keys.json") as f:
     keys = json.load(f)
-SERVER_DK = bytes.fromhex(keys["server_dk"])
-PHARMA_PK = bytes.fromhex(keys["pharma_pk"])
+PQC_IMPLEMENTATION = os.environ.get("PQC_IMPLEMENTATION", "baseline")
+SERVER_EK, SERVER_DK, HOSPITAL_SK, PHARMA_PK = key_fields(
+    keys,
+    PQC_IMPLEMENTATION,
+)
 
 
 def derive_aes(shared_secret: bytes) -> bytes:
@@ -53,6 +60,53 @@ def add_resource_headers(response, process, started_at, cpu_started):
     return response
 
 
+def verify_improved_packet(packet):
+    if PQC_IMPLEMENTATION != IMPROVED:
+        return False, "Improved packets require PQC_IMPLEMENTATION=improved."
+
+    try:
+        digest = signature_digest(packet)
+        signature = bytes.fromhex(packet["signature"])
+        metadata = packet["metadata"]
+    except (KeyError, TypeError, ValueError) as exc:
+        return False, str(exc)
+
+    if not isinstance(metadata.get("source"), str) or not metadata["source"]:
+        return False, "Authenticated packet metadata must include a source."
+    if not timestamp_is_fresh(packet["timestamp"]):
+        return False, "Packet timestamp is outside the accepted time window."
+    if not verify(PQC_IMPLEMENTATION, PHARMA_PK, digest, signature):
+        return False, "Invalid ML-DSA signature."
+    return True, None
+
+
+def accept_improved_packet(packet):
+    accepted, error = verify_improved_packet(packet)
+    if not accepted:
+        return None, (error or "Invalid authenticated packet.", 400)
+
+    try:
+        nonce = packet["nonce"]
+        source = packet["metadata"]["source"]
+        timestamp = packet["timestamp"]
+        sequence = packet["sequence"]
+        ciphertext = bytes.fromhex(packet["ciphertext"])
+        kem_ciphertext = bytes.fromhex(packet["kem_ct"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, (str(exc), 400)
+
+    shared_secret = decapsulate(PQC_IMPLEMENTATION, SERVER_DK, kem_ciphertext)
+    replay_result = packet_store.accept_packet(
+        source=source,
+        sequence=sequence,
+        nonce=nonce,
+        expires_at=timestamp + 2 * MAX_CLOCK_SKEW_SECONDS,
+    )
+    if replay_result != "accepted":
+        return None, (f"Packet rejected: {replay_result}.", 409)
+    return shared_secret, None
+
+
 @app.route("/")
 def home():
     return redirect("/dashboard")
@@ -68,16 +122,26 @@ def receive():
     source = metadata.get("source", "unknown") if isinstance(metadata, dict) else "unknown"
     print("\n📩 [GATEWAY] Received packet from", source)
 
-    if "kem_ct" in data:
-        kem_ct = bytes.fromhex(data["kem_ct"])
-        shared_secret = ML_KEM_768.decaps(SERVER_DK, kem_ct)
-        print("✅ ML-KEM-768 decapsulation successful")
+    if data.get("protocol_version") == 2:
+        shared_secret, error = accept_improved_packet(data)
+        if error:
+            message, status = error
+            return jsonify({"error": message}), status
+    elif PQC_IMPLEMENTATION == IMPROVED:
+        return jsonify({"error": "The improved gateway requires authenticated packet version 2."}), 400
+    elif "kem_ct" in data:
+        try:
+            kem_ct = bytes.fromhex(data["kem_ct"])
+            shared_secret = decapsulate(PQC_IMPLEMENTATION, SERVER_DK, kem_ct)
+        except (TypeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+    else:
+        shared_secret = None
 
-        packet = data.copy()
+    packet = data.copy()
+    if shared_secret is not None:
         packet["session_key"] = shared_secret.hex()
         packet["status"] = "received"
-    else:
-        packet = data.copy()
 
     log_id = packet_store.append(packet)
     return jsonify({"status": "received", "log_id": log_id})
@@ -124,17 +188,35 @@ def benchmark_pqc():
         if not isinstance(envelope, dict):
             raise ValueError("Expected a JSON PQC envelope.")
 
+        verify_started = time.perf_counter()
+        if envelope.get("protocol_version") == 2:
+            accepted, error = verify_improved_packet(envelope)
+            if not accepted:
+                return jsonify({"error": error}), 400
+        elif PQC_IMPLEMENTATION == IMPROVED:
+            return jsonify({"error": "The improved gateway requires authenticated packet version 2."}), 400
+        else:
+            signature = bytes.fromhex(envelope["signature"])
+            aes_ct = bytes.fromhex(envelope["ciphertext"])
+            if not verify(PQC_IMPLEMENTATION, PHARMA_PK, aes_ct, signature):
+                return jsonify({"error": "Invalid ML-DSA signature"}), 400
+        verify_ms = (time.perf_counter() - verify_started) * 1000
+
         kem_ct = bytes.fromhex(envelope["kem_ct"])
         aes_ct = bytes.fromhex(envelope["ciphertext"])
-        signature = bytes.fromhex(envelope["signature"])
         expected_sha256 = envelope["metadata"]["sha256"]
-        shared_secret = ML_KEM_768.decaps(SERVER_DK, kem_ct)
-
-        verify_started = time.perf_counter()
-        verified = ML_DSA_65.verify(PHARMA_PK, aes_ct, signature)
-        verify_ms = (time.perf_counter() - verify_started) * 1000
-        if not verified:
-            return jsonify({"error": "Invalid ML-DSA signature"}), 400
+        shared_secret = decapsulate(PQC_IMPLEMENTATION, SERVER_DK, kem_ct)
+        if envelope.get("protocol_version") == 2:
+            replay_result = packet_store.accept_packet(
+                source=envelope["metadata"]["source"],
+                sequence=envelope["sequence"],
+                nonce=envelope["nonce"],
+                expires_at=(
+                    envelope["timestamp"] + 2 * MAX_CLOCK_SKEW_SECONDS
+                ),
+            )
+            if replay_result != "accepted":
+                return jsonify({"error": f"Packet rejected: {replay_result}"}), 409
 
         decrypt_started = time.perf_counter()
         cipher = AES.new(derive_aes(shared_secret), AES.MODE_GCM, nonce=aes_ct[:16])
@@ -144,7 +226,7 @@ def benchmark_pqc():
             "bytes_received": request.content_length or 0,
             "plaintext_bytes": len(plaintext),
             "plaintext_match": hashlib.sha256(plaintext).hexdigest() == expected_sha256,
-            "verified": verified,
+            "verified": True,
             "receiver_verify_time_ms": round(verify_ms, 3),
             "receiver_decrypt_time_ms": round(decrypt_ms, 3),
         })
@@ -157,15 +239,21 @@ def benchmark_pqc():
 def dashboard():
     benchmark_results = []
     benchmark_path = PROJECT_ROOT / "benchmark_results.json"
-
     if benchmark_path.exists():
-        with benchmark_path.open(encoding="utf-8") as f:
-            benchmark_results = json.load(f)
+        with benchmark_path.open(encoding="utf-8") as benchmark_file:
+            benchmark_results = json.load(benchmark_file)
+
+    improved_results = []
+    improved_path = PROJECT_ROOT / "benchmark_results_improved.json"
+    if improved_path.exists():
+        with improved_path.open(encoding="utf-8") as benchmark_file:
+            improved_results = json.load(benchmark_file)
 
     return render_template(
         "dashboard.html",
         logs=packet_store.get_all(),
         benchmark_results=benchmark_results,
+        improved_benchmark_results=improved_results,
     )
 
 

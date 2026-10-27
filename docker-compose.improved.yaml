@@ -1,0 +1,24 @@
+services:
+  gateway-1:
+    environment:
+      PQC_IMPLEMENTATION: improved
+
+  gateway-2:
+    environment:
+      PQC_IMPLEMENTATION: improved
+
+  gateway-3:
+    environment:
+      PQC_IMPLEMENTATION: improved
+
+  benchmark:
+    environment:
+      PQC_IMPLEMENTATION: improved
+
+  hospital:
+    environment:
+      PQC_IMPLEMENTATION: improved
+
+  pharma:
+    environment:
+      PQC_IMPLEMENTATION: improved

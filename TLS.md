@@ -31,6 +31,20 @@ credentials are ignored by Git; do not reuse them outside this controlled
 demo. The cluster exposes the TLS endpoint on
 `https://localhost:5001`.
 
+## Open the dashboards
+
+After starting the cluster, start the local dashboard service:
+
+```powershell
+docker compose up -d dashboard
+```
+
+Open `http://localhost:5002/dashboard` for the local baseline/improved crypto
+comparison and `http://localhost:5002/tls-dashboard` for the network reports.
+The dashboard reads `benchmark_results.json`,
+`benchmark_results_improved.json`, and reports in `benchmark-output\` directly
+from the host workspace. The service binds only to localhost.
+
 To exercise the application flow, submit a sample and retrieve it:
 
 ```powershell
@@ -126,6 +140,47 @@ The benchmark's application crypto fields describe the existing PQC
 application workflow and are reported separately from TLS handshake time.
 Use `tls_profile` and `mode` to distinguish the TLS transport from
 application-layer protection.
+
+## Compare baseline and improved application PQC
+
+The baseline remains the default and keeps its existing packet format and
+pure-Python implementation. The improved implementation is selected
+explicitly and adds:
+
+- an ML-DSA signature over a canonical digest of the metadata, timestamp,
+  sequence number, nonce, and encrypted payload;
+- a 128-bit random nonce, a strictly increasing per-sender sequence number,
+  and a five-minute timestamp acceptance window;
+- atomic replay checks shared by the gateway replicas through Redis; and
+- native `liboqs` implementations of ML-KEM-768 and ML-DSA-65.
+
+The pure-Python and native implementations use separate key pairs. Generate
+the improved key material without replacing the baseline keys:
+
+```powershell
+docker compose --profile tools run --rm pqc-keygen
+```
+
+Compare the application-layer implementations over the same classical mTLS
+transport. Keep the file types, sizes, and run count the same for both
+commands. The report files are intentionally separate:
+
+```powershell
+docker compose down --remove-orphans
+docker compose -f docker-compose.yaml -f docker-compose.classical.yaml up --build -d redis gateway-1 gateway-2 gateway-3 tls-proxy
+docker compose -f docker-compose.yaml -f docker-compose.classical.yaml --profile tools run --rm benchmark python analysis/benchmark.py --network --mode application-pqc --implementation baseline --runs 5 --sizes 1 10 --filetypes txt csv json pdf --output benchmark-output/tls-application-pqc-baseline.json
+
+docker compose -f docker-compose.yaml -f docker-compose.classical.yaml -f docker-compose.improved.yaml up --build -d redis gateway-1 gateway-2 gateway-3 tls-proxy
+docker compose -f docker-compose.yaml -f docker-compose.classical.yaml -f docker-compose.improved.yaml --profile tools run --rm benchmark python analysis/benchmark.py --network --mode application-pqc --implementation improved --runs 5 --sizes 1 10 --filetypes txt csv json pdf --output benchmark-output/tls-application-pqc-improved.json
+```
+
+The improved Compose overlay configures the gateways and hospital/pharma
+clients to require the improved packet format and native keys. Running the
+benchmark in improved mode without that overlay (or without improved keys)
+fails rather than silently selecting the baseline. The TLS dashboard loads
+both reports from `benchmark-output`; the application dashboard compares
+local crypto timing reports from `benchmark_results.json` and
+`benchmark_results_improved.json`.
 
 ## Security and measurement scope
 

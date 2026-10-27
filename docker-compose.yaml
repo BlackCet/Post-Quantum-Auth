@@ -6,6 +6,13 @@ services:
     volumes:
       - ./tls-certs:/tls-certs
 
+  pqc-keygen:
+    build: .
+    profiles: ["tools"]
+    command: ["python", "keygen.py", "--implementation", "improved"]
+    volumes:
+      - ./keys.json:/app/keys.json
+
   redis:
     build:
       context: .
@@ -109,6 +116,25 @@ services:
       timeout: 2s
       retries: 20
 
+  dashboard:
+    image: post-quantum-auth-gateway-1
+    command:
+      - python
+      - -c
+      - from gateway.server import app; app.run(host="0.0.0.0", port=5002)
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:5002:5002"
+    volumes:
+      - ./keys.json:/app/keys.json:ro
+      - ./benchmark_results.json:/app/benchmark_results.json:ro
+      - ./benchmark_results_improved.json:/app/benchmark_results_improved.json:ro
+      - ./benchmark-output:/app/benchmark-output:ro
+
   benchmark:
     build: .
     profiles: ["tools"]
@@ -141,6 +167,8 @@ services:
       - ./tls-certs/pq/hospital.crt:/tls/hospital.crt:ro
       - ./tls-certs/pq/hospital.key:/tls/hospital.key:ro
       - ./benchmark-output:/app/benchmark-output
+      - ./benchmark_results.json:/app/benchmark_results.json
+      - ./benchmark_results_improved.json:/app/benchmark_results_improved.json
 
   hospital:
     build: .
